@@ -8,7 +8,8 @@ import { qrPage } from './qr-page.js';
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 
 const PORT = Number(process.env.PORT || 3000);
-const DATA_DIR = path.resolve(process.env.DATA_DIR || './data');
+// En Railway, si hay un Volume conectado se usa su ruta automáticamente (RAILWAY_VOLUME_MOUNT_PATH)
+const DATA_DIR = path.resolve(process.env.RAILWAY_VOLUME_MOUNT_PATH || process.env.DATA_DIR || './data');
 let API_KEY = process.env.API_KEY;
 if (!API_KEY) {
   API_KEY = crypto.randomBytes(24).toString('hex');
