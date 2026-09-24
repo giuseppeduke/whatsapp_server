@@ -56,6 +56,12 @@ export function getMessageText(message) {
   );
 }
 
+// "5491122334455@s.whatsapp.net" -> "5491122334455" (los @lid y grupos no son teléfonos)
+function phoneOf(jid) {
+  if (!jid || !jid.endsWith('@s.whatsapp.net')) return null;
+  return jid.split('@')[0].split(':')[0];
+}
+
 // Versión simple y serializable de un WAMessage
 export function simplifyMessage(msg) {
   const ts = toNumber(msg.messageTimestamp);
@@ -63,6 +69,8 @@ export function simplifyMessage(msg) {
     id: msg.key?.id,
     chatId: msg.key?.remoteJid,
     chatIdAlt: msg.key?.remoteJidAlt || undefined,
+    // Número de teléfono (si WhatsApp lo informa). Con los IDs @lid viene en chatIdAlt.
+    phone: phoneOf(msg.key?.remoteJid) || phoneOf(msg.key?.remoteJidAlt) || undefined,
     fromMe: !!msg.key?.fromMe,
     participant: msg.key?.participant || undefined,
     pushName: msg.pushName || undefined,
@@ -240,6 +248,7 @@ export class Store {
     const chat = this.chats.get(jid);
     if (simple.timestamp > (chat.timestamp || 0)) chat.timestamp = simple.timestamp;
     if (!chat.name && !jid.endsWith('@g.us') && !simple.fromMe && simple.pushName) chat.name = simple.pushName;
+    if (simple.phone && !chat.phone) chat.phone = simple.phone;
 
     this._dirty = true;
     return simple;
