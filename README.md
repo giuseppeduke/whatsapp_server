@@ -115,6 +115,20 @@ curl -X POST $URL/api/chats/5491122334455/read   -H "x-api-key: $KEY"
 curl -X POST $URL/api/chats/5491122334455/unread -H "x-api-key: $KEY"
 ```
 
+### Anti-baneo
+
+Todos los envíos pasan por una cola que imita a una persona:
+
+- Salen **de a uno**, con pausas aleatorias de 2 a 6 s (más largas con gente que nunca te escribió, de noche y apenas se reconecta).
+- Muestra **"escribiendo…"** (o "grabando audio…") el tiempo que tardaría una persona en escribir ese texto.
+- **Límites:** 8/min, 120/hora, 800/día, 20 chats nuevos/día y máximo 5 veces el mismo texto por hora. Si se supera, la API responde `429` con el motivo en `antiban`.
+- **Monitor de riesgo:** si WhatsApp da señales (desconexiones 401/403/463, envíos fallidos) baja la velocidad y, si es crítico, **pausa los envíos** (`503`) hasta que baje.
+- `GET /api/antiban` muestra el riesgo, el uso y los límites actuales.
+- Para respuestas donde la demora no importa podés mandar `"typing": false` en `/api/messages/text`.
+- Todo se ajusta con variables `ANTIBAN_*` (ver `.env.example`). Para un **número nuevo** activá `ANTIBAN_WARMUP=true`.
+
+Lo que más protege no lo puede hacer el servidor: escribirle solo a gente que te escribió primero o que espera tu mensaje, no mandar publicidad masiva y usar un número con uso real (no recién creado).
+
 ### Webhook
 
 Si configurás `WEBHOOK_URL`, por cada mensaje nuevo se manda un `POST`:
