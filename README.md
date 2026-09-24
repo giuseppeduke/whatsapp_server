@@ -86,6 +86,17 @@ Los números van con código de país, sin `+` ni espacios (se limpian igual). E
 | POST | `/api/messages/media` | `{ "to": "...", "type": "image\|video\|audio\|document\|sticker", "url": "https://...", "caption": "...", "fileName": "factura.pdf", "mimetype": "application/pdf" }` |
 | POST | `/api/messages/read` | `{ "chatId": "...", "ids": ["MSG_ID_1", "MSG_ID_2"] }` |
 
+### Mensajes sin leer (con marca leído / no leído)
+| Método | Ruta | Descripción |
+|---|---|---|
+| GET | `/api/messages/unread?mark=none\|read\|unread` | Devuelve los mensajes sin leer agrupados por chat |
+| POST | `/api/messages/unread` | Igual, con body `{ "mark": "read" }` (también acepta `"tag"`) |
+| GET | `/api/chats/:chatId/messages?mark=read` | Mensajes de un chat y lo marca |
+
+- `mark=none` (por defecto): solo lee, no cambia nada en WhatsApp.
+- `mark=read`: los marca como leídos (el contacto ve el tilde azul).
+- `mark=unread`: los deja marcados como **no leídos** en tu celular.
+
 ### Ejemplos
 
 ```bash
