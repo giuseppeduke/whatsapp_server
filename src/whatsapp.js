@@ -34,7 +34,30 @@ export class WhatsApp {
     this.retries = 0;
     this.sentCache = new Map(); // id -> message (para reintentos de descifrado)
     this.webhookSent = new Set(); // ids ya enviados (evita duplicados)
+    // Historial de conexión persistido en disco: sirve para diagnosticar desvinculaciones
+    // (y si sobrevive a un redeploy, confirma que el Volume funciona)
+    this.bootAt = new Date().toISOString();
+    this.connLogFile = path.join(dataDir, 'connection-log.json');
+    this.connLog = [];
+    try {
+      this.connLog = JSON.parse(fs.readFileSync(this.connLogFile, 'utf8'));
+    } catch {
+      /* primera vez */
+    }
+    this.sessionRestored = fs.existsSync(path.join(this.authDir, 'creds.json'));
+    this._logConn({ event: 'boot', sessionRestored: this.sessionRestored });
     this.webhookStats = { ok: 0, failed: 0, lastOkAt: null, lastErrorAt: null, last: null, recent: [] };
+  }
+
+  _logConn(entry) {
+    this.connLog.push({ at: new Date().toISOString(), ...entry });
+    if (this.connLog.length > 100) this.connLog.splice(0, this.connLog.length - 100);
+    try {
+      fs.mkdirSync(this.dataDir, { recursive: true });
+      fs.writeFileSync(this.connLogFile, JSON.stringify(this.connLog, null, 1));
+    } catch (err) {
+      this.logger.warn({ err: err.message }, 'No se pudo guardar connection-log');
+    }
   }
 
   async start() {
@@ -79,12 +102,16 @@ export class WhatsApp {
         this.qrDataUrl = null;
         this.retries = 0;
         this.me = sock.user;
+        this._logConn({ event: 'open', me: sock.user?.id });
         this.logger.info({ me: sock.user?.id }, 'WhatsApp conectado');
       }
 
       if (connection === 'close') {
         const code = lastDisconnect?.error?.output?.statusCode;
-        this.logger.warn({ code, err: lastDisconnect?.error?.message }, 'Conexión cerrada');
+        const reason = Object.keys(DisconnectReason).find((k) => DisconnectReason[k] === code) || 'unknown';
+        this.lastDisconnect = { at: new Date().toISOString(), code, reason, message: lastDisconnect?.error?.message };
+        this._logConn({ event: 'close', code, reason, message: lastDisconnect?.error?.message });
+        this.logger.warn({ code, reason, err: lastDisconnect?.error?.message }, 'Conexión cerrada');
 
         if (code === DisconnectReason.loggedOut) {
           this.status = 'logged_out';
@@ -94,8 +121,14 @@ export class WhatsApp {
         }
 
         this.status = 'closed';
+        // connectionReplaced (440): otra instancia usa la misma sesión (p. ej. durante un redeploy).
+        // Esperamos más para no pelearnos con ella.
         const delay =
-          code === DisconnectReason.restartRequired ? 0 : Math.min(30_000, 2000 * 2 ** this.retries++);
+          code === DisconnectReason.restartRequired
+            ? 0
+            : code === DisconnectReason.connectionReplaced
+              ? 20_000
+              : Math.min(30_000, 2000 * 2 ** this.retries++);
         setTimeout(() => this.start().catch((e) => this.logger.error(e)), delay);
       }
     });
@@ -267,6 +300,11 @@ export class WhatsApp {
       connected: this.isReady(),
       hasQr: !!this.qr,
       me: this.me ? { id: this.me.id, name: this.me.name } : null,
+      dataDir: this.dataDir,
+      bootAt: this.bootAt,
+      sessionRestoredOnBoot: this.sessionRestored,
+      lastDisconnect: this.lastDisconnect || null,
+      history: this.connLog.slice(-15),
     };
   }
 
