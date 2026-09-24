@@ -81,6 +81,10 @@ api.get('/qr', (_req, res) =>
 api.post('/pairing-code', h(async (req, res) => res.json(await wa.requestPairingCode(req.body.phone))));
 api.post('/logout', h(async (_req, res) => res.json(await wa.logout())));
 
+// Webhook: estado y prueba
+api.get('/webhook', (_req, res) => res.json(wa.getWebhookInfo()));
+api.post('/webhook/test', h(async (_req, res) => res.json(await wa.testWebhook())));
+
 // Contactos
 api.get('/contacts', (_req, res) => res.json(wa.store.listContacts()));
 api.get('/contacts/:number/exists', h(async (req, res) => res.json(await wa.checkNumber(req.params.number))));
