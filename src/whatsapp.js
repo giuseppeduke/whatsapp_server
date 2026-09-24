@@ -33,6 +33,7 @@ export class WhatsApp {
     this.me = null;
     this.retries = 0;
     this.sentCache = new Map(); // id -> message (para reintentos de descifrado)
+    this.webhookSent = new Set(); // ids ya enviados (evita duplicados)
     this.webhookStats = { ok: 0, failed: 0, lastOkAt: null, lastErrorAt: null, last: null, recent: [] };
   }
 
@@ -119,7 +120,12 @@ export class WhatsApp {
         if (msg.pushName && !simple.fromMe && !simple.chatId.endsWith('@g.us')) {
           this.store.upsertContact({ id: simple.chatId, notify: msg.pushName });
         }
-        if (type === 'notify') {
+        // "notify" = mensaje nuevo. A veces llegan como "append" (sync); los reenviamos si son recientes.
+        const ageSec = Date.now() / 1000 - (simple.timestamp || 0);
+        const isNew = type === 'notify' || (type === 'append' && ageSec < 120);
+        if (isNew && !this.webhookSent.has(simple.id)) {
+          this.webhookSent.add(simple.id);
+          if (this.webhookSent.size > 2000) this.webhookSent.delete(this.webhookSent.values().next().value);
           this._webhook({ event: 'message', message: simple });
         }
       }
