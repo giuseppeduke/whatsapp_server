@@ -5,6 +5,7 @@ import path from 'node:path';
 import QRCode from 'qrcode';
 import * as baileysModule from 'baileys';
 import { Store } from './store.js';
+import { AntiBan } from './antiban.js';
 
 // Compatibilidad ESM/CJS entre versiones de Baileys
 const B = baileysModule.makeWASocket ? baileysModule : baileysModule.default;
@@ -25,6 +26,7 @@ export class WhatsApp {
     this.webhookUrl = webhookUrl;
     this.webhookSecret = webhookSecret;
     this.store = new Store(dataDir, logger);
+    this.antiban = new AntiBan({ dataDir, logger });
 
     this.sock = null;
     this.status = 'starting'; // starting | qr | connecting | open | closed | logged_out
@@ -103,6 +105,7 @@ export class WhatsApp {
         this.retries = 0;
         this.me = sock.user;
         this._logConn({ event: 'open', me: sock.user?.id });
+        this.antiban.onConnectionOpen();
         this.logger.info({ me: sock.user?.id }, 'WhatsApp conectado');
       }
 
@@ -111,6 +114,7 @@ export class WhatsApp {
         const reason = Object.keys(DisconnectReason).find((k) => DisconnectReason[k] === code) || 'unknown';
         this.lastDisconnect = { at: new Date().toISOString(), code, reason, message: lastDisconnect?.error?.message };
         this._logConn({ event: 'close', code, reason, message: lastDisconnect?.error?.message });
+        this.antiban.onDisconnect(code);
         this.logger.warn({ code, reason, err: lastDisconnect?.error?.message }, 'Conexión cerrada');
 
         if (code === DisconnectReason.loggedOut) {
@@ -330,6 +334,17 @@ export class WhatsApp {
     return { code };
   }
 
+  // "Chat nuevo" = alguien con quien no hay conversación previa (el riesgo más alto de baneo)
+  _isNewChat(jid) {
+    if (jid.endsWith('@g.us')) return false;
+    if (this.store.chats.has(jid) || this.store.contacts.has(jid)) return false;
+    const phone = jid.endsWith('@s.whatsapp.net') ? jid.split('@')[0] : null;
+    if (phone) {
+      for (const c of this.store.chats.values()) if (c.phone === phone) return false;
+    }
+    return true;
+  }
+
   _remember(sent) {
     if (sent?.key?.id && sent.message) {
       this.sentCache.set(sent.key.id, sent.message);
@@ -338,7 +353,7 @@ export class WhatsApp {
     if (sent) this.store.addMessage(sent);
   }
 
-  async sendText(to, text, { quotedId } = {}) {
+  async sendText(to, text, { quotedId, typing } = {}) {
     this.assertReady();
     if (!text) {
       const err = new Error('Falta "text"');
@@ -351,12 +366,19 @@ export class WhatsApp {
       const q = (this.store.messages.get(jid) || []).find((m) => m.id === quotedId);
       if (q) opts.quoted = { key: q.key, message: { conversation: q.text || '' } };
     }
-    const sent = await this.sock.sendMessage(jid, { text }, opts);
+    const { result: sent, antiban } = await this.antiban.run({
+      jid,
+      text,
+      typing,
+      isNewChat: this._isNewChat(jid),
+      setPresence: (state) => this.sock.sendPresenceUpdate(state, jid),
+      send: () => this.sock.sendMessage(jid, { text }, opts),
+    });
     this._remember(sent);
-    return { id: sent?.key?.id, chatId: jid };
+    return { id: sent?.key?.id, chatId: jid, antiban };
   }
 
-  async sendMedia(to, { type, url, caption, fileName, mimetype, ptt }) {
+  async sendMedia(to, { type, url, caption, fileName, mimetype, ptt, typing }) {
     this.assertReady();
     const allowed = ['image', 'video', 'audio', 'document', 'sticker'];
     if (!allowed.includes(type)) {
@@ -381,9 +403,17 @@ export class WhatsApp {
       if (ptt) content.ptt = true;
     }
     if (mimetype && !content.mimetype) content.mimetype = mimetype;
-    const sent = await this.sock.sendMessage(jid, content);
+    const { result: sent, antiban } = await this.antiban.run({
+      jid,
+      text: caption,
+      typing,
+      presence: type === 'audio' ? 'recording' : 'composing',
+      isNewChat: this._isNewChat(jid),
+      setPresence: (state) => this.sock.sendPresenceUpdate(state, jid),
+      send: () => this.sock.sendMessage(jid, content),
+    });
     this._remember(sent);
-    return { id: sent?.key?.id, chatId: jid };
+    return { id: sent?.key?.id, chatId: jid, antiban };
   }
 
   async sendPresence(to, state = 'composing') {
