@@ -1,4 +1,5 @@
 // Manejo de la conexión con WhatsApp (Baileys): QR, reconexión, eventos y acciones.
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import QRCode from 'qrcode';
@@ -145,15 +146,25 @@ export class WhatsApp {
   async _webhook(payload) {
     if (!this.webhookUrl) return;
     try {
-      await fetch(this.webhookUrl, {
+      const body = JSON.stringify(payload);
+      const headers = { 'content-type': 'application/json' };
+      if (this.webhookSecret) {
+        // Firma HMAC-SHA256 del body (hex) + el secret plano, para que el receptor valide como prefiera
+        const sig = crypto.createHmac('sha256', this.webhookSecret).update(body).digest('hex');
+        headers['x-webhook-secret'] = this.webhookSecret;
+        headers['x-webhook-signature'] = `sha256=${sig}`;
+        headers['x-hub-signature-256'] = `sha256=${sig}`;
+      }
+      const res = await fetch(this.webhookUrl, {
         method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          ...(this.webhookSecret ? { 'x-webhook-secret': this.webhookSecret } : {}),
-        },
-        body: JSON.stringify(payload),
+        headers,
+        body,
         signal: AbortSignal.timeout(10_000),
       });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        this.logger.warn({ status: res.status, body: text.slice(0, 300) }, 'Webhook respondió con error');
+      }
     } catch (err) {
       this.logger.warn({ err: err.message }, 'Webhook falló');
     }
