@@ -44,6 +44,32 @@ function auth(req, res, next) {
 // Página para escanear el QR (abrir en el navegador: /qr?key=TU_API_KEY)
 app.get('/qr', auth, (req, res) => res.type('html').send(qrPage(String(req.query.key || ''))));
 
+// "read" | "unread" | "none" (acepta también leido / no_leido)
+function parseMark(value) {
+  if (value == null || value === '') return 'none';
+  const v = String(value).toLowerCase().trim().replace(/[\s-]/g, '_');
+  if (['read', 'leido', 'leído', 'visto'].includes(v)) return 'read';
+  if (['unread', 'no_leido', 'no_leído', 'noleido', 'sin_leer'].includes(v)) return 'unread';
+  if (['none', 'no', 'false'].includes(v)) return 'none';
+  const err = new Error('"mark" debe ser "read", "unread" o "none"');
+  err.status = 400;
+  throw err;
+}
+
+async function applyMark(jid, mark) {
+  if (mark === 'read') {
+    await wa.markChatRead(jid);
+    return 'read';
+  }
+  if (mark === 'unread') {
+    const prev = wa.store.chats.get(jid)?.unreadCount || 0;
+    await wa.markChatUnread(jid);
+    if (prev > 0) wa.store.setUnread(jid, prev); // conservamos el contador
+    return 'unread';
+  }
+  return null;
+}
+
 const api = express.Router();
 api.use(auth);
 
@@ -65,11 +91,14 @@ api.get('/chats', (req, res) => {
   const limit = Math.min(Number(req.query.limit || 100), 1000);
   res.json(wa.store.listChats({ onlyUnread, limit }));
 });
-api.get('/chats/:chatId/messages', (req, res) => {
+api.get('/chats/:chatId/messages', h(async (req, res) => {
   const jid = wa.toJid(req.params.chatId);
   const limit = Math.min(Number(req.query.limit || 50), 500);
-  res.json({ chatId: jid, messages: wa.store.getMessages(jid, limit) });
-});
+  const mark = parseMark(req.query.mark ?? req.query.tag);
+  const messages = wa.store.getMessages(jid, limit);
+  const marked = await applyMark(jid, mark);
+  res.json({ chatId: jid, mark, marked, messages });
+}));
 api.post('/chats/:chatId/read', h(async (req, res) => res.json(await wa.markChatRead(req.params.chatId))));
 api.post('/chats/:chatId/unread', h(async (req, res) => res.json(await wa.markChatUnread(req.params.chatId))));
 api.post(
@@ -77,7 +106,32 @@ api.post(
   h(async (req, res) => res.json(await wa.sendPresence(req.params.chatId, req.body.state)))
 );
 
-// Mensajes
+// Mensajes sin leer.
+// mark / tag: "read" = los marca como leídos (manda el visto)
+//             "unread" = los deja marcados como no leídos en el celular
+//             "none" (por defecto) = no toca nada
+async function unreadHandler(req, res) {
+  const mark = parseMark(req.body?.mark ?? req.body?.tag ?? req.query.mark ?? req.query.tag);
+  const limit = Math.min(Number(req.body?.limit ?? req.query.limit ?? 50), 500);
+  const chats = wa.store.listChats({ onlyUnread: true, limit });
+  const result = [];
+  for (const c of chats) {
+    // unreadCount -1 = chat marcado a mano como no leído → devolvemos el último mensaje
+    const n = c.unreadCount > 0 ? Math.min(c.unreadCount, 100) : 1;
+    const messages = wa.store.lastIncoming(c.id, n);
+    let marked;
+    try {
+      marked = await applyMark(c.id, mark);
+    } catch (err) {
+      marked = { error: err.message };
+    }
+    result.push({ chatId: c.id, name: c.name, isGroup: c.isGroup, unreadCount: c.unreadCount, messages, marked });
+  }
+  res.json({ mark, chats: result.length, messages: result.reduce((s, c) => s + c.messages.length, 0), data: result });
+}
+api.get('/messages/unread', h(unreadHandler));
+api.post('/messages/unread', h(unreadHandler));
+
 api.post(
   '/messages/text',
   h(async (req, res) => res.json(await wa.sendText(req.body.to, req.body.text, { quotedId: req.body.quotedId })))
