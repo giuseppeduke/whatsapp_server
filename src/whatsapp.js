@@ -33,6 +33,7 @@ export class WhatsApp {
     this.me = null;
     this.retries = 0;
     this.sentCache = new Map(); // id -> message (para reintentos de descifrado)
+    this.webhookStats = { ok: 0, failed: 0, lastOkAt: null, lastErrorAt: null, last: null, recent: [] };
   }
 
   async start() {
@@ -144,7 +145,15 @@ export class WhatsApp {
   }
 
   async _webhook(payload) {
-    if (!this.webhookUrl) return;
+    if (!this.webhookUrl) return { ok: false, error: 'WEBHOOK_URL no configurada' };
+    const started = Date.now();
+    const entry = {
+      at: new Date().toISOString(),
+      event: payload.event,
+      messageId: payload.message?.id || payload.key?.id,
+      chatId: payload.message?.chatId || payload.key?.remoteJid,
+      text: payload.message?.text?.slice(0, 80),
+    };
     try {
       const body = JSON.stringify(payload);
       const headers = { 'content-type': 'application/json' };
@@ -161,13 +170,57 @@ export class WhatsApp {
         body,
         signal: AbortSignal.timeout(10_000),
       });
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        this.logger.warn({ status: res.status, body: text.slice(0, 300) }, 'Webhook respondió con error');
-      }
+      entry.status = res.status;
+      entry.ok = res.ok;
+      if (!res.ok) entry.response = (await res.text().catch(() => '')).slice(0, 300);
     } catch (err) {
-      this.logger.warn({ err: err.message }, 'Webhook falló');
+      entry.ok = false;
+      entry.error = err.message;
     }
+    entry.ms = Date.now() - started;
+    this._recordWebhook(entry);
+    return entry;
+  }
+
+  _recordWebhook(entry) {
+    const s = this.webhookStats;
+    if (entry.ok) s.ok++;
+    else s.failed++;
+    s.last = entry;
+    if (entry.ok) s.lastOkAt = entry.at;
+    else s.lastErrorAt = entry.at;
+    s.recent.unshift(entry);
+    if (s.recent.length > 20) s.recent.pop();
+    if (entry.ok) this.logger.info({ event: entry.event, status: entry.status, ms: entry.ms }, 'Webhook enviado OK');
+    else this.logger.warn(entry, 'Webhook falló');
+  }
+
+  getWebhookInfo() {
+    return {
+      configured: !!this.webhookUrl,
+      url: this.webhookUrl || null,
+      signed: !!this.webhookSecret,
+      ...this.webhookStats,
+    };
+  }
+
+  // Manda un mensaje de prueba al webhook (no pasa por WhatsApp)
+  async testWebhook() {
+    const now = Math.floor(Date.now() / 1000);
+    return this._webhook({
+      event: 'message',
+      test: true,
+      message: {
+        id: `TEST-${now}`,
+        chatId: '5490000000000@s.whatsapp.net',
+        fromMe: false,
+        pushName: 'Prueba webhook',
+        timestamp: now,
+        date: new Date(now * 1000).toISOString(),
+        type: 'conversation',
+        text: 'Mensaje de prueba del servidor de WhatsApp',
+      },
+    });
   }
 
   // ---------- Helpers ----------
