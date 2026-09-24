@@ -82,6 +82,9 @@ api.get('/qr', (_req, res) =>
 api.post('/pairing-code', h(async (req, res) => res.json(await wa.requestPairingCode(req.body.phone))));
 api.post('/logout', h(async (_req, res) => res.json(await wa.logout())));
 
+// Anti-baneo: riesgo, uso y límites
+api.get('/antiban', (_req, res) => res.json(wa.antiban.getInfo()));
+
 // Webhook: estado y prueba
 api.get('/webhook', (_req, res) => res.json(wa.getWebhookInfo()));
 api.post('/webhook/test', h(async (_req, res) => res.json(await wa.testWebhook())));
@@ -139,7 +142,9 @@ api.post('/messages/unread', h(unreadHandler));
 
 api.post(
   '/messages/text',
-  h(async (req, res) => res.json(await wa.sendText(req.body.to, req.body.text, { quotedId: req.body.quotedId })))
+  h(async (req, res) =>
+    res.json(await wa.sendText(req.body.to, req.body.text, { quotedId: req.body.quotedId, typing: req.body.typing }))
+  )
 );
 api.post('/messages/media', h(async (req, res) => res.json(await wa.sendMedia(req.body.to, req.body))));
 api.post(
@@ -156,8 +161,9 @@ app.get('/', (_req, res) =>
 // Errores
 app.use((err, _req, res, _next) => {
   const status = err.status || err.output?.statusCode || 500;
+  if (err.retryAfter) res.set('Retry-After', String(err.retryAfter));
   if (status >= 500) logger.error({ err }, 'Error en request');
-  res.status(status).json({ error: err.message || 'Error interno' });
+  res.status(status).json({ error: err.message || 'Error interno', ...(err.antiban ? { antiban: err.antiban } : {}) });
 });
 
 app.listen(PORT, () => logger.info(`Servidor escuchando en :${PORT} — datos en ${DATA_DIR}`));
